@@ -12,3 +12,11 @@ def read_clipboard():
     except Exception as e: # Catch potential import errors if pyperclip isn't installed
          print(f"Error: pyperclip library might not be installed or accessible. {e}")
          return None
+def clear_clipboard():
+    """Clears the system clipboard."""
+    try:
+        pyperclip.copy("")  # Set clipboard content to an empty string
+    except pyperclip.PyperclipException as e:
+        print(f"Error clearing clipboard: {e}")
+    except Exception as e: # Catch potential import errors if pyperclip isn't installed
+         print(f"Error: pyperclip library might not be installed or accessible. {e}")

@@ -6,6 +6,11 @@ import clippy
 import time
 from gemini import generate
 import json
+from vocaliizer import speak
+
+class DictationType:
+    DICTATION = "dictation"
+    COMMAND = "command"
 
 recognizer = sr.Recognizer()
 mic = sr.Microphone()
@@ -13,8 +18,9 @@ transcribing = False
 stop_event = threading.Event()
 keyboard_controller = Controller()
 highlight_context = None
-dictation_type = "command"
-
+dictation_type = DictationType.DICTATION
+pressed_keys = set()
+switch_mode = False
 
 def continuous_transcribe():
     audios = []
@@ -44,9 +50,9 @@ def continuous_transcribe():
         text = ' '.join(texts)
         print(f"You said: {text}")
         print(f"Current highlight context: {highlight_context}")
-        if dictation_type == "dictation":
+        if dictation_type == DictationType.DICTATION:
             type_string(text)
-        if dictation_type == "command":
+        if dictation_type == DictationType.COMMAND:
             response = generate(highlight_context, '', text)
             if response:
                 response_obj = json.loads(response[7:-4])
@@ -78,7 +84,8 @@ def type_string(input_string):
 
 
 def on_press(key):
-    global transcribing, highlight_context
+    global transcribing, highlight_context, pressed_keys, switch_mode
+    pressed_keys.add(key)
     # Check if the specific key to trigger transcription is pressed
     trigger_key = keyboard.Key.alt_l 
     if key == trigger_key:
@@ -88,14 +95,18 @@ def on_press(key):
             highlight_context = get_highlight_context()
             stop_event.clear()
             threading.Thread(target=continuous_transcribe, daemon=True).start()
-        return True  # Stop propagation
-
+        return True
+    if key == keyboard.Key.shift_l and len(pressed_keys) == 1:
+        switch_mode = True
+    if key != keyboard.Key.shift_l and keyboard.Key.shift_l in pressed_keys:
+        switch_mode = False
     # Allow other key presses to propagate normally
     return True
 
 
 def on_release(key):
-    global transcribing
+    global transcribing, pressed_keys, dictation_type, switch_mode, volacliizer
+    pressed_keys.discard(key)
     # Check if the key that stops transcription is released
     # Assuming releasing Left Option stops it, as before.
     if key == keyboard.Key.alt_l:
@@ -103,6 +114,14 @@ def on_release(key):
             print("🔓 Option key released — stopping transcription...")
             transcribing = False
             stop_event.set()
+    
+    if key == keyboard.Key.shift_l and switch_mode:
+        if dictation_type == DictationType.DICTATION:
+            speak("Switching to command mode.")
+            dictation_type = DictationType.COMMAND
+        else:
+            speak("Switching to dictation mode.")
+            dictation_type = DictationType.DICTATION
 
 
 def setup():
@@ -139,8 +158,10 @@ def get_highlight_context():
     Returns the current highlight_context of the clipboard.
     """
     try:
+        clippy.clear_clipboard()
+        time.sleep(0.05)  # Wait for clipboard to clear
         force_clipboard()
-        time.sleep(0.1)  # Wait for clipboard to update
+        time.sleep(0.05)  # Wait for clipboard to update
         return clippy.read_clipboard()
     except Exception as e:
         print(f"Error reading clipboard: {e}")
