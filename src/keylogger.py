@@ -21,54 +21,43 @@ highlight_context = None
 dictation_type = DictationType.DICTATION
 pressed_keys = set()
 switch_mode = False
+count_on_shift=0
+stop_listening = None
+
+
+def callback(recognizer, audio):
+    print("🔴 Stopped transcribing.")
+    global stop_listening, highlight_context, dictation_type
+    try:
+        text = recognizer.recognize_google(audio)
+    except sr.UnknownValueError:
+        speak("Couldn't understand.")
+    except sr.RequestError:
+        speak("API unavailable.")
+    print(f"You said: {text}")
+    print(f"Current highlight context: {highlight_context}")
+    if dictation_type == DictationType.DICTATION:
+        type_string(text)
+    if dictation_type == DictationType.COMMAND:
+        response = generate(highlight_context, '', text)
+        if response:
+            response_obj = json.loads(response[7:-4])
+            if "oldText" in response_obj:
+                old_text = response_obj["oldText"]
+                new_text = response_obj["newText"]
+                print(f"Old text: {old_text}")
+                print(f"New text: {new_text}")
+                if old_text != highlight_context:
+                    keyboard_controller.press(keyboard.Key.right)
+                    for i in range(len(old_text)):
+                        keyboard_controller.press(keyboard.Key.backspace)
+                type_string(new_text)
 
 def continuous_transcribe():
-    audios = []
-    with mic as source:
-        while not stop_event.is_set():
-            try:
-                print("🎤 Listening...")
-                audios.append(recognizer.listen(source, timeout=10, phrase_time_limit=60))
-            except sr.WaitTimeoutError:
-                print("⏳ No speech detected...")
-            except sr.UnknownValueError:
-                print("❗ Couldn't understand.")
-            except sr.RequestError as e:
-                print(f"❗ API error: {e}")
-                break
+    global stop_listening, highlight_context, dictation_type
+
+    stop_listening = recognizer.listen_in_background(mic, callback)
     
-    if audios:
-        texts = []
-        try:
-            print("📝 Transcribing...")
-            for audio in audios:
-                texts.append(recognizer.recognize_google(audio))
-        except sr.UnknownValueError:
-            print("❗ Couldn't understand.")
-        except sr.RequestError as e:
-            print(f"❗ API error: {e}")
-        text = ' '.join(texts)
-        print(f"You said: {text}")
-        print(f"Current highlight context: {highlight_context}")
-        if dictation_type == DictationType.DICTATION:
-            type_string(text)
-        if dictation_type == DictationType.COMMAND:
-            response = generate(highlight_context, '', text)
-            if response:
-                response_obj = json.loads(response[7:-4])
-                if "oldText" in response_obj:
-                    old_text = response_obj["oldText"]
-                    new_text = response_obj["newText"]
-                    print(f"Old text: {old_text}")
-                    print(f"New text: {new_text}")
-                    if old_text != highlight_context:
-                        keyboard_controller.press(keyboard.Key.right)
-                        for i in range(len(old_text)):
-                            keyboard_controller.press(keyboard.Key.backspace)
-                    type_string(new_text)
-
-    print("🔴 Stopped transcribing.")
-
 
 def type_string(input_string):
     """
@@ -84,7 +73,12 @@ def type_string(input_string):
 
 
 def on_press(key):
-    global transcribing, highlight_context, pressed_keys, switch_mode
+    global transcribing, highlight_context, pressed_keys, switch_mode, count_on_shift
+    if key == keyboard.Key.shift:
+        switch_mode = True
+        count_on_shift = len(pressed_keys)
+    else:
+        switch_mode = False
     pressed_keys.add(key)
     # Check if the specific key to trigger transcription is pressed
     trigger_key = keyboard.Key.alt_l 
@@ -96,36 +90,47 @@ def on_press(key):
             stop_event.clear()
             threading.Thread(target=continuous_transcribe, daemon=True).start()
         return True
-    if key == keyboard.Key.shift_l and len(pressed_keys) == 1:
-        switch_mode = True
-    if key != keyboard.Key.shift_l and keyboard.Key.shift_l in pressed_keys:
-        switch_mode = False
     # Allow other key presses to propagate normally
     return True
 
 
 def on_release(key):
-    global transcribing, pressed_keys, dictation_type, switch_mode, volacliizer
+    global transcribing, pressed_keys, dictation_type, switch_mode, count_on_shift, stop_listening
     pressed_keys.discard(key)
     # Check if the key that stops transcription is released
     # Assuming releasing Left Option stops it, as before.
-    if key == keyboard.Key.alt_l:
-        if transcribing:
-            print("🔓 Option key released — stopping transcription...")
-            transcribing = False
-            stop_event.set()
+    if key == keyboard.Key.alt_l and transcribing:
+        print("🔒 Trigger key released — stopping transcription...")
+        transcribing = False
+        print(stop_listening)
+        threading.Timer(1.0, lambda: stop_listening(wait_for_stop=True)).start()
+
     
-    if key == keyboard.Key.shift_l and switch_mode:
+    if key == keyboard.Key.shift and switch_mode and len(pressed_keys) == count_on_shift:
+        switch_mode = False
         if dictation_type == DictationType.DICTATION:
             speak("Switching to command mode.")
             dictation_type = DictationType.COMMAND
         else:
             speak("Switching to dictation mode.")
             dictation_type = DictationType.DICTATION
+        print(f"Switching dictation mode to {dictation_type}")
+
 
 
 def setup():
+    mic_list = sr.Microphone.list_microphone_names()
+    print("Available microphones:")
+    for index, name in enumerate(mic_list, start=1):
+        print(f"Source {index}: {name}")
+    input_index = int(input("Input source number: ")) - 1
+    if input_index < 0 or input_index >= len(mic_list):
+        print("❗ Invalid microphone index. Using default.")
+        input_index = 0
+    global mic
+    mic = sr.Microphone(device_index=input_index)
     with mic as source:
+        print("🔊 Adjusting for ambient noise...")
         recognizer.adjust_for_ambient_noise(source)
         print("🟢 Ready to transcribe...")
 
