@@ -1,16 +1,18 @@
+import pyautogui
 from pynput import keyboard
 from pynput.keyboard import Controller
 import speech_recognition as sr
 import threading
 import clippy
 import time
-from gemini import generate
+from gemini import generate, help_transcribe
 import json
 from vocaliizer import speak
 
 class DictationType:
     DICTATION = "dictation"
     COMMAND = "command"
+    SMART_DICTATION = "smart dictation"
 
 recognizer = sr.Recognizer()
 mic = sr.Microphone()
@@ -18,27 +20,48 @@ transcribing = False
 stop_event = threading.Event()
 keyboard_controller = Controller()
 highlight_context = None
-dictation_type = DictationType.DICTATION
+dictation_type = DictationType.SMART_DICTATION
 pressed_keys = set()
 switch_mode = False
 count_on_shift=0
 stop_listening = None
+audios = []
 
-
-def callback(recognizer, audio):
-    print("🔴 Stopped transcribing.")
-    global stop_listening, highlight_context, dictation_type
+def recognize_speech(a) -> str:
     try:
-        text = recognizer.recognize_google(audio)
+        text = recognizer.recognize_google(a)
+        return text
     except sr.UnknownValueError:
-        speak("Couldn't understand.")
-    except sr.RequestError:
-        speak("API unavailable.")
-    print(f"You said: {text}")
-    print(f"Current highlight context: {highlight_context}")
+        print("Could not understand audio")
+    except sr.RequestError as e:
+        print(f"Could not request results from Google Speech Recognition service; {e}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    return ""
+
+def background_job(stop_condition_func):
+    global audios, stop_listening
+    while stop_condition_func():
+        print("Checking condition...")
+        time.sleep(1)
+    
+    print("🔴 Stopped transcribing.")
+    time.sleep(1)
+    stop_listening(wait_for_stop=True)
+    try:
+        text = " ".join([recognize_speech(a) for a in audios])
+    except sr.UnknownValueError:
+        print("Could not understand audio")
+    
+    print(f"Final text: {text}")
+    audios = []
+    if not text:
+        print("No text recognized.")
+        return
+
     if dictation_type == DictationType.DICTATION:
         type_string(text)
-    if dictation_type == DictationType.COMMAND:
+    elif dictation_type == DictationType.COMMAND:
         response = generate(highlight_context, '', text)
         if response:
             response_obj = json.loads(response[7:-4])
@@ -52,6 +75,24 @@ def callback(recognizer, audio):
                     for i in range(len(old_text)):
                         keyboard_controller.press(keyboard.Key.backspace)
                 type_string(new_text)
+    elif dictation_type == DictationType.SMART_DICTATION:
+        ss_path = "tmp/screenshot.png"
+        take_screenshot(ss_path)
+        time.sleep(0.1)
+        response = help_transcribe(text, ss_path)
+        print(f"Gemini transcription: {response}")
+        type_string(response)
+    
+
+def get_transcribing_state():
+    global transcribing
+    return transcribing
+
+def callback(recognizer, audio):
+    print("Chunk recorded.")
+    global stop_listening, highlight_context, dictation_type, audios
+    print("🔵 Transcribing...")
+    audios.append(audio)
 
 def continuous_transcribe():
     global stop_listening, highlight_context, dictation_type
@@ -89,6 +130,7 @@ def on_press(key):
             highlight_context = get_highlight_context()
             stop_event.clear()
             threading.Thread(target=continuous_transcribe, daemon=True).start()
+            threading.Thread(target=background_job, args=(get_transcribing_state,), daemon=True).start()
         return True
     # Allow other key presses to propagate normally
     return True
@@ -102,19 +144,19 @@ def on_release(key):
     if key == keyboard.Key.alt_l and transcribing:
         print("🔒 Trigger key released — stopping transcription...")
         transcribing = False
-        print(stop_listening)
-        threading.Timer(1.0, lambda: stop_listening(wait_for_stop=True)).start()
-
     
     if key == keyboard.Key.shift and switch_mode and len(pressed_keys) == count_on_shift:
         switch_mode = False
         if dictation_type == DictationType.DICTATION:
-            speak("Switching to command mode.")
-            dictation_type = DictationType.COMMAND
-        else:
+            speak("Switching to smart dictation mode.")
+            dictation_type = DictationType.SMART_DICTATION
+        elif dictation_type == DictationType.COMMAND:
             speak("Switching to dictation mode.")
             dictation_type = DictationType.DICTATION
-        print(f"Switching dictation mode to {dictation_type}")
+        elif dictation_type == DictationType.SMART_DICTATION:
+            speak("Switching to command mode.")
+            dictation_type = DictationType.COMMAND
+        print(f"Switching mode to {dictation_type}")
 
 
 
@@ -176,6 +218,12 @@ def get_highlight_context():
 def force_clipboard():
     execute_shortcut([keyboard.Key.cmd, 'c'])
 
+def take_screenshot(output_path="tmp/screenshot.png"):
+    screenshot = pyautogui.screenshot()
+
+    # Save to path
+    screenshot.save(output_path)
+    print(f"Screenshot saved to {output_path}")
 
 setup()
 # Start listener
@@ -184,3 +232,4 @@ listener.start()
 
 print("Press Option+d to begin transcribing speech... Release Left Option to stop. Press ESC to exit.")
 listener.join()
+
